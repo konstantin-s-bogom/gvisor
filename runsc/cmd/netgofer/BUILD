@@ -12,6 +12,7 @@ go_binary(
     ],
     noasan = True,
     pure = True,
+    static_pie = True,
     visibility = [
         "//:sandbox",
     ],

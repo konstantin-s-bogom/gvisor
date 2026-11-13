@@ -12,6 +12,7 @@ go_binary(
     srcs = ["main.go"],
     noasan = True,
     pure = True,
+    static_pie = True,
     tags = ["staging"],
     # Do NOT add new visibility entries here.
     # Users should depend on the gVisor release fileset,

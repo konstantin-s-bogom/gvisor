@@ -9,6 +9,7 @@ go_binary(
     name = "checkpointgofer_binary",
     srcs = ["main.go"],
     pure = True,
+    static_pie = True,
     visibility = [
         "//visibility:public",
     ],

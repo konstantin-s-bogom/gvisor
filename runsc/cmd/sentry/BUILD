@@ -11,6 +11,7 @@ go_binary(
     srcs = ["sentry_main.go"],
     noasan = True,
     pure = True,
+    static_pie = True,
     visibility = ["//visibility:public"],
     x_defs = {"gvisor.dev/gvisor/runsc/version.version": "{STABLE_VERSION}"},
     deps = [

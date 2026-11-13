@@ -81,7 +81,7 @@ save_restore_platforms = _save_restore_platforms
 # Tags.
 local_test_tags = _local_test_tags
 
-def go_binary(name, nogo = True, pure = False, static = False, x_defs = None, **kwargs):
+def go_binary(name, nogo = True, pure = False, static = False, static_pie = False, x_defs = None, **kwargs):
     """Wraps the standard go_binary.
 
     Args:
@@ -89,6 +89,8 @@ def go_binary(name, nogo = True, pure = False, static = False, x_defs = None, **
       nogo: enable nogo analysis.
       pure: build a pure Go (no CGo) binary.
       static: build a static binary.
+      static_pie: build a static position-independent executable, which the
+        kernel loads at a random address. Requires pure and not static.
       x_defs: additional linker definitions.
       **kwargs: standard go_binary arguments.
     """
@@ -96,6 +98,7 @@ def go_binary(name, nogo = True, pure = False, static = False, x_defs = None, **
         name = name,
         pure = pure,
         static = static,
+        static_pie = static_pie,
         x_defs = x_defs,
         **kwargs
     )
@@ -104,7 +107,7 @@ def go_binary(name, nogo = True, pure = False, static = False, x_defs = None, **
             name = name + "_nogo",
             config = "//:nogo_config",
             srcs = kwargs.get("srcs", []),
-            deps = [_go_binary_nogo_dep(name, noasan = kwargs.get("noasan", False))],
+            deps = [_go_binary_nogo_dep(name, noasan = kwargs.get("noasan", False), static_pie = static_pie)],
             tags = ["nogo"],
         )
 

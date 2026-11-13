@@ -66,8 +66,79 @@ def go_proto_library(name, **kwargs):
 def go_grpc_and_proto_libraries(name, **kwargs):
     _go_proto_or_grpc_library(_go_grpc_library, name, **kwargs)
 
-def go_binary(name, static = False, pure = False, x_defs = None, **kwargs):
+# _STATIC_PIE_SUFFIX is the name suffix of the go_binary that a static_pie
+# go_binary wraps.
+_STATIC_PIE_SUFFIX = "_dynamic_pie"
+
+def _static_pie_binary_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name)
+    args = ctx.actions.args()
+    args.add(ctx.executable.actual_binary)
+    args.add(out)
+    ctx.actions.run(
+        executable = ctx.executable._staticpie,
+        arguments = [args],
+        inputs = [ctx.executable.actual_binary],
+        outputs = [out],
+        mnemonic = "GoStaticPIE",
+        progress_message = "Making static PIE %{output}",
+    )
+    return [
+        DefaultInfo(
+            executable = out,
+            files = depset([out]),
+            runfiles = ctx.runfiles(files = [out]).merge(ctx.attr.actual_binary[DefaultInfo].default_runfiles),
+        ),
+        coverage_common.instrumented_files_info(
+            ctx,
+            dependency_attributes = ["actual_binary"],
+        ),
+    ]
+
+_static_pie_binary = rule(
+    implementation = _static_pie_binary_impl,
+    attrs = {
+        "actual_binary": attr.label(
+            doc = "The go_binary built with linkmode pie and //pkg/staticpie.",
+            executable = True,
+            cfg = "target",
+            mandatory = True,
+        ),
+        "_staticpie": attr.label(
+            default = "//tools/staticpie",
+            executable = True,
+            cfg = "exec",
+        ),
+    },
+    executable = True,
+)
+
+def go_binary(name, static = False, pure = False, static_pie = False, x_defs = None, **kwargs):
     """Build a go binary.
+
+    Args:
+        name: name of the target.
+        static: build a static binary.
+        pure: build without cgo.
+        static_pie: build a static position-independent executable, which the
+            kernel loads at a random address. Requires pure and not static.
+            See //pkg/staticpie.
+        x_defs: additional definitions.
+        **kwargs: rest of the arguments are passed to _go_binary.
+    """
+    if "noasan" in kwargs:
+        # no-op option, will need to do transitions when sanitizer configs are defined.
+        kwargs.pop("noasan")
+
+    if static_pie:
+        if static or not pure:
+            fail("static_pie requires pure = True and static = False")
+        _go_static_pie_binary(name, x_defs = x_defs, **kwargs)
+    else:
+        _go_binary_with_opts(name, static = static, pure = pure, x_defs = x_defs, **kwargs)
+
+def _go_binary_with_opts(name, static, pure, x_defs, **kwargs):
+    """Builds a go binary with gVisor-specific options.
 
     Args:
         name: name of the target.
@@ -76,10 +147,6 @@ def go_binary(name, static = False, pure = False, x_defs = None, **kwargs):
         x_defs: additional definitions.
         **kwargs: rest of the arguments are passed to _go_binary.
     """
-    if "noasan" in kwargs:
-        # no-op option, will need to do transitions when sanitizer configs are defined.
-        kwargs.pop("noasan")
-
     if static:
         kwargs["static"] = "on"
     if pure:
@@ -103,6 +170,51 @@ def go_binary(name, static = False, pure = False, x_defs = None, **kwargs):
         **kwargs
     )
 
+def _go_static_pie_binary(name, visibility = None, tags = None, testonly = None, **kwargs):
+    """Builds a static PIE go binary. See go_binary.
+
+    Args:
+        name: name of the target.
+        visibility: visibility of the target.
+        tags: tags of the target.
+        testonly: testonly of the target.
+        **kwargs: rest of the arguments are passed to _go_binary_with_opts.
+    """
+    for attr in ("args", "basename", "env", "out"):
+        if attr in kwargs:
+            fail("static_pie does not support %s" % attr)
+    actual = name + _STATIC_PIE_SUFFIX
+
+    # The Go linker links only the packages that the main package imports.
+    native.genrule(
+        name = actual + "_import",
+        outs = [actual + "_import.go"],
+        cmd = "printf 'package main\\n\\nimport _ \"gvisor.dev/gvisor/pkg/staticpie\"\\n' > $@",
+        tags = tags,
+        testonly = testonly,
+        visibility = ["//visibility:private"],
+    )
+    _go_binary_with_opts(
+        name = actual,
+        static = False,
+        srcs = kwargs.pop("srcs", []) + [":" + actual + "_import.go"],
+        deps = kwargs.pop("deps", []) + ["//pkg/staticpie"],
+        gc_linkopts = kwargs.pop("gc_linkopts", []) + ["-E", "_rt0_gvisor_static_pie", "-bindnow"],
+        linkmode = "pie",
+        pure = True,
+        tags = tags,
+        testonly = testonly,
+        visibility = ["//visibility:private"],
+        **kwargs
+    )
+    _static_pie_binary(
+        name = name,
+        actual_binary = ":" + actual,
+        tags = tags,
+        testonly = testonly,
+        visibility = visibility,
+    )
+
 def go_importpath(target):
     """Returns the importpath for the target."""
     return target[GoLibrary].importpath
@@ -119,17 +231,20 @@ def go_binary_archive(target):
     """Returns compiled Go archive metadata for a binary target."""
     return target[GoArchive].data
 
-def go_binary_nogo_dep(name, noasan = False):  # buildifier: disable=unused-variable
+def go_binary_nogo_dep(name, noasan = False, static_pie = False):  # buildifier: disable=unused-variable
     """Returns the target that nogo should analyze for the given go_binary.
 
     Args:
         name: the go_binary rule name.
-        noasan: whether the binary disables sanitizers. Unused here; the bazel
-            go_binary rule is always analyzable directly.
+        noasan: whether the binary disables sanitizers. Unused here.
+        static_pie: whether the binary is a static PIE. nogo analyzes the
+            go_binary that the static PIE target wraps.
 
     Returns:
         A label relative to the current package.
     """
+    if static_pie:
+        return ":" + name + _STATIC_PIE_SUFFIX
     return ":" + name
 
 def go_library(name, bazel_cgo = False, bazel_cdeps = [], bazel_clinkopts = [], bazel_copts = [], **kwargs):
